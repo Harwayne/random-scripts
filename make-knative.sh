@@ -19,6 +19,7 @@ startsWith() {
 create=true
 zone=us-central1-a
 name=""
+head=false
 
 for arg in "$@"
 do
@@ -28,6 +29,8 @@ do
     elif startsWith "$arg" "--zone="; then
       # len(--zone=) = 7
       zone=${arg:7}
+    elif [ "$arg" = "--head" ]; then
+      head=true
     else
       echo "Unknown argument: '$arg'"
       exit 1
@@ -68,22 +71,57 @@ kubectl create clusterrolebinding cluster-admin-binding \
 --clusterrole=cluster-admin \
 --user=$(gcloud config get-value core/account)
 
-kubectl apply -f https://raw.githubusercontent.com/knative/serving/v0.1.1/third_party/istio-0.8.0/istio.yaml
-kubectl label namespace default istio-injection=enabled
+## Istio
+
+if $head ; then
+  ## Move to Serving.
+  pushd ~/go/src/github.com/knative/serving
+  kubectl apply -f ./third_party/istio-1.0.1/istio.yaml
+  popd
+else
+  kubectl apply -f https://raw.githubusercontent.com/knative/serving/v0.1.1/third_party/istio-1.0.1/istio.yaml
+  kubectl label namespace default istio-injection=enabled
+fi
+
 watch kubectl get pods -n istio-system
 
-kubectl apply -f https://github.com/knative/serving/releases/download/v0.1.1/release.yaml
-watch kubectl get pods -n knative-serving
+## Build
+if $head ; then
+  pushd ~/go/src/github.com/knative/serving
+  kubectl apply -f ./third_party/config/build/release.yaml
+  popd
+else
+  kubectl apply -f https://raw.githubusercontent.com/knative/serving/v0.1.1/third_party/config/build/release.yaml
+fi
 
-kubectl apply -f https://raw.githubusercontent.com/knative/serving/v0.1.1/third_party/config/build/release.yaml
 watch kubectl get pods -n knative-build
 
+## Serving
+if $head ; then
+  pushd ~/go/src/github.com/knative/serving
+  # Use my custom config-network.yaml instead of the original
+  ko apply -f config/
+  popd
+else
+  kubectl apply -f https://github.com/knative/serving/releases/download/v0.1.1/release.yaml
+fi
+
+watch kubectl get pods -n knative-serving
+
+## Reserved domain and IP.
 kubectl apply -f ~/knative/config-domain.yaml
 kubectl patch svc knative-ingressgateway -n istio-system --patch '{"spec": { "loadBalancerIP": "35.224.154.114" }}'
 
-echo "You should be at the root of the eventing repo..."
+## Eventing
+pushd ~/go/src/github.com/knative/eventing
 ko apply -f config/
+popd
+
 watch kubectl get pods -n knative-eventing
 
-ko apply -f ~/knative/stub-bus.yaml
-
+# Cluster Stub Bus
+if $head ; then
+  kubectl apply -f https://storage.googleapis.com/knative-releases/eventing/latest/release-clusterbus-stub.yaml
+else
+  ko apply -f ~/knative/stub-bus.yaml
+fi
